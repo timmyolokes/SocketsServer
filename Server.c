@@ -7,26 +7,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#pragma comment(lib, "ws2_32.lib")  // link with Winsock library
+#pragma comment(lib, "ws2_32.lib")
 
-#define PACKETSIZE 1024
+#define PACKET_SIZE 1024
 
+typedef struct {
+    int seqNum;
+    char data[PACKET_SIZE];
+} Packet;
 
 int main() {
     WSADATA wsa;
     SOCKET s;
-    struct sockaddr_in server;
-    int i = 0;
-    int fileLen = 0;
-    FILE* writefp;
-    //char buffer[1024], packet[1024];
-    char buffer[PACKETSIZE];
-    char packet[PACKETSIZE + 1];
-    int slen = sizeof(server);
-    int recv_len;
-    struct sockaddr_in si_other;
-
-
+    struct sockaddr_in server, si_other;
+    int slen = sizeof(si_other);
 
     printf("\n****** INITIALIZING WINSOCK ***********");
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -39,52 +33,65 @@ int main() {
     if ((s = socket(AF_INET, SOCK_DGRAM, 0)) == INVALID_SOCKET) {
         printf("Could not create socket : %d", WSAGetLastError());
     }
-    else printf("\nUDP SERVER SOCKET CREATED");
+    else printf("\nUDP SERVER SOCKET CREATED.");
 
-    server.sin_addr.s_addr = inet_addr("127.0.0.1"); // or INADDR_ANY
+    /***** INITIALIZE SOCKET STRUCT - Server ****/
+    server.sin_addr.s_addr = inet_addr("127.0.0.1"); //INADDR_ANY;
     server.sin_family = AF_INET;
     server.sin_port = htons(80);
+
     /***** BIND SOCKET ****/
     if (bind(s, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR) {
         printf("Bind failed with error code : %d", WSAGetLastError());
         exit(EXIT_FAILURE);
     }
-    puts("\nSERVER SOCKET BIND SUCCESS");
+    printf("\nSERVER SOCKET BIND SUCCESS");
 
-    /***** WAIT FOR DATA ****/
+    /***** RECEIVE DATA PACKETS ****/
     printf("\nWaiting for data...");
 
-    //while (waiting for data) {
+    FILE* writefp = fopen("test2.jpg", "wb");
+    if (writefp == NULL) {
+        printf("Error Opening Image-write");
+        exit(EXIT_FAILURE);
+    }
+
+    int expected_sequence_number = 0;
+
     while (1) {
-        fflush(stdout);
-        memset(packet, '\0', PACKETSIZE); //clear buffer of previously received data
-        /******** RECEIVE DATA PACKET - blocking *************/
-        if ((recv_len = recvfrom(s, packet, PACKETSIZE + 1, 0, (struct sockaddr*)&si_other, &slen)) == SOCKET_ERROR)
-        {
+        Packet recvPacket;
+        int recv_len;
+        if ((recv_len = recvfrom(s, (char*)&recvPacket, sizeof(recvPacket), 0, (struct sockaddr*)&si_other, &slen)) == SOCKET_ERROR) {
             printf("recvfrom() failed with error code : %d", WSAGetLastError());
             exit(EXIT_FAILURE);
         }
-        else printf("\nSERVER Received packet IPaddr %s Port %d, seq no = %d: ", inet_ntoa(si_other.sin_addr),
-            ntohs(si_other.sin_port), packet[PACKETSIZE]);
+        else {
+            printf("Received packet from %s:%d\n", inet_ntoa(si_other.sin_addr), ntohs(si_other.sin_port));
+            printf("Packet sequence number: %d\n", recvPacket.seqNum);
 
+            if (recvPacket.seqNum == expected_sequence_number) {
+                fwrite(recvPacket.data, 1, recv_len - sizeof(int), writefp);
+                expected_sequence_number++;
+            }
+            else {
+                printf("Unexpected packet sequence number, expecting %d\n", expected_sequence_number);
+            }
 
-        while (i < fileLen) {
-            buffer[i] = packet[i];
-            i += 1;
-        }// while(byteCount < fileLen)
-
-        /*********** write contents of buffer to a file ************/
-        writefp = fopen("test2.jpg", "wb");
-        if (writefp == NULL) {
-            printf("\nError Opening Image-write");
-            fclose(writefp);
-            exit(0);
-        } else printf("\nfile opened for writing");
-        fwrite(buffer, fileLen, 1, writefp);
-        fclose(writefp);
-        printf("\nc SAVED image, press any key");
+            // Send ACK for received packet
+            Packet ackPacket;
+            ackPacket.seqNum = recvPacket.seqNum;
+            if (sendto(s, (char*)&ackPacket, sizeof(int), 0, (struct sockaddr*)&si_other, slen) == SOCKET_ERROR) {
+                printf("sendto() failed with error code : %d", WSAGetLastError());
+                exit(EXIT_FAILURE);
+            }
+            printf("ACK %d sent\n", recvPacket.seqNum);
+        }
     }
 
+    // Cleanup
+    fclose(writefp);
     closesocket(s);
     WSACleanup();
+
+    return 0;
 }
